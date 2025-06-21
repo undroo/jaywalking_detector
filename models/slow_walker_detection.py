@@ -23,7 +23,9 @@ class SlowWalkerDetection:
                  fast_movement_threshold: float = 0.1,
                  slow_duration_threshold: float = 1.0,
                  roast_cooldown: float = 5.0,
-                 enable_voice: bool = True):
+                 enable_voice: bool = True,
+                 frame_skip: int = 1,  # Process every Nth frame for speed
+                 history_size: int = 5):  # Reduced from 10 for faster response
         """
         Initialize the slow walker detector.
         
@@ -34,6 +36,8 @@ class SlowWalkerDetection:
             slow_duration_threshold: Minimum duration (seconds) to trigger slow walker roast
             roast_cooldown: Cooldown period (seconds) between roasts
             enable_voice: Whether to enable text-to-speech for roasts
+            frame_skip: Process every Nth frame (higher = faster but less responsive)
+            history_size: Number of frames to keep in movement history
         """
         self.camera_feed = camera_feed
         self.slow_movement_threshold = slow_movement_threshold
@@ -41,11 +45,14 @@ class SlowWalkerDetection:
         self.slow_duration_threshold = slow_duration_threshold
         self.roast_cooldown = roast_cooldown
         self.enable_voice = enable_voice
+        self.frame_skip = frame_skip
+        self.history_size = history_size
         
         # Initialize detection systems
         self.movement_detector = MovementDetection(
             camera_feed=camera_feed,
-            movement_threshold=slow_movement_threshold
+            movement_threshold=slow_movement_threshold,
+            smoothing_frames=3  # Reduced for faster response
         )
         
         # Initialize ShameBot
@@ -65,10 +72,17 @@ class SlowWalkerDetection:
         
         # Detection history for smoothing
         self.movement_history = []
-        self.history_size = 10
         
         # Threading for non-blocking roasts
         self.roast_thread = None
+        
+        # Frame counter for skipping
+        self.frame_counter = 0
+        
+        # Cached drawing elements for performance
+        self._cached_overlay = None
+        self._cached_stats = None
+        self._last_stats_update = 0
         
     def analyze_walking_speed(self, movement_percentage: float) -> str:
         """
@@ -81,7 +95,7 @@ class SlowWalkerDetection:
             String indicating walking speed: 'slow', 'normal', 'fast', or 'none'
         """
 
-        if movement_percentage < 0.006:
+        if movement_percentage < 0.003:
             return 'none'
         elif movement_percentage < self.slow_movement_threshold:
             return 'slow'
@@ -140,7 +154,7 @@ class SlowWalkerDetection:
                         'start_time': self.slow_walking_start_time,
                         'end_time': current_time,
                         'duration': duration,
-                        'avg_movement': sum(d['movement_percentage'] for d in self.movement_history[-5:]) / 5
+                        'avg_movement': sum(d['movement_percentage'] for d in self.movement_history[-3:]) / 3
                     })
             self.is_slow_walking = False
             self.slow_walking_start_time = None
@@ -179,11 +193,11 @@ class SlowWalkerDetection:
         Returns:
             True if slow walking is detected, False otherwise
         """
-        if len(self.movement_history) < 5:
+        if len(self.movement_history) < 3:  # Reduced from 5 for faster response
             return False
         
         # Get recent detections
-        recent_detections = self.movement_history[-5:]
+        recent_detections = self.movement_history[-3:]  # Reduced from 5
         
         # Count slow walking occurrences
         slow_count = sum(1 for d in recent_detections if d['walking_speed'] == 'slow')
@@ -193,8 +207,8 @@ class SlowWalkerDetection:
         slow_ratio = slow_count / len(recent_detections)
         movement_ratio = movement_count / len(recent_detections)
         
-        # Both conditions must be met for majority of recent frames
-        return slow_ratio >= 0.6 and movement_ratio >= 0.6
+        # Reduced thresholds for faster response
+        return slow_ratio >= 0.5 and movement_ratio >= 0.5  # Reduced from 0.6
     
     def _trigger_roast_async(self, frame: np.ndarray, movement_percentage: float):
         """
@@ -282,17 +296,21 @@ class SlowWalkerDetection:
         """
         result_frame = frame.copy()
         
-        # Draw movement detections
-        result_frame = self.movement_detector.draw_movement(
-            result_frame, detection['movement_detection']
-        )
+        # Draw movement detections (only if needed)
+        if detection['is_slow_walking'] or detection['movement_percentage'] > 0.01:
+            result_frame = self.movement_detector.draw_movement(
+                result_frame, detection['movement_detection']
+            )
         
         # Add slow walker status
         if detection['is_slow_walking']:
-            # Orange background for slow walker alert
-            overlay = result_frame.copy()
-            cv2.rectangle(overlay, (0, 0), (result_frame.shape[1], 150), (0, 165, 255), -1)
-            result_frame = cv2.addWeighted(result_frame, 0.7, overlay, 0.3, 0)
+            # Use cached overlay for performance
+            if self._cached_overlay is None or self._cached_overlay.shape != frame.shape:
+                self._cached_overlay = np.zeros_like(frame)
+                cv2.rectangle(self._cached_overlay, (0, 0), (frame.shape[1], 150), (0, 165, 255), -1)
+            
+            # Apply overlay
+            result_frame = cv2.addWeighted(result_frame, 0.7, self._cached_overlay, 0.3, 0)
             
             # Slow walker alert text
             cv2.putText(result_frame, "SLOW WALKER DETECTED!", 
@@ -313,7 +331,7 @@ class SlowWalkerDetection:
                 cv2.putText(result_frame, "ROASTING IN PROGRESS...", 
                            (10, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
         else:
-            # Normal status
+            # Normal status - simplified for speed
             speed_colors = {
                 'none': (128, 128, 128),
                 'slow': (0, 165, 255),  # Orange
@@ -322,23 +340,21 @@ class SlowWalkerDetection:
             }
             
             speed_color = speed_colors.get(detection['walking_speed'], (255, 255, 255))
-            cv2.putText(result_frame, f"Walking Speed: {detection['walking_speed'].upper()}", 
+            cv2.putText(result_frame, f"Speed: {detection['walking_speed'].upper()}", 
                        (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, speed_color, 2)
             
             cv2.putText(result_frame, f"Movement: {detection['movement_percentage']:.2%}", 
                        (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            
-            cv2.putText(result_frame, f"Objects: {detection['contour_count']}", 
-                       (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
+        # Cache statistics to avoid frequent recalculations
+        current_time = time.time()
+        if self._cached_stats is None or current_time - self._last_stats_update > 1.0:
+            self._cached_stats = self.get_slow_walker_statistics()
+            self._last_stats_update = current_time
         
         # Add statistics
-        stats = self.get_slow_walker_statistics()
-        cv2.putText(result_frame, f"Slow Walker Events: {stats['total_events']}", 
-                   (10, result_frame.shape[0] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        if stats['total_events'] > 0:
-            cv2.putText(result_frame, f"Avg Duration: {stats['average_duration']:.1f}s", 
-                       (10, result_frame.shape[0] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(result_frame, f"Events: {self._cached_stats['total_events']}", 
+                   (10, result_frame.shape[0] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         return result_frame
     
@@ -365,13 +381,23 @@ class SlowWalkerDetection:
                     print("Failed to get frame")
                     break
                 
+                # Frame skipping for performance
+                self.frame_counter += 1
+                if self.frame_counter % self.frame_skip != 0:
+                    if display:
+                        cv2.imshow('Slow Walker Detection', frame)
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break
+                    continue
+                
                 # Detect slow walker
                 detection = self.detect_slow_walker(frame)
                 
-                # Print current status
-                status = "SLOW WALKING" if detection['is_slow_walking'] else "NORMAL"
-                print(f"\rStatus: {status} | Speed: {detection['walking_speed']} | Movement: {detection['movement_percentage']:.2%} | Events: {detection['total_slow_walker_events']}", 
-                      end="", flush=True)
+                # Print current status (less frequently for performance)
+                if self.frame_counter % (self.frame_skip * 10) == 0:
+                    status = "SLOW WALKING" if detection['is_slow_walking'] else "NORMAL"
+                    print(f"\rStatus: {status} | Speed: {detection['walking_speed']} | Movement: {detection['movement_percentage']:.2%} | Events: {detection['total_slow_walker_events']}", 
+                          end="", flush=True)
                 
                 # Handle roast trigger
                 if detection['roast_triggered']:
@@ -396,8 +422,8 @@ class SlowWalkerDetection:
                         self.enable_voice = not self.enable_voice
                         print(f"\nVoice {'enabled' if self.enable_voice else 'disabled'}")
                 
-                # Small delay to prevent excessive CPU usage
-                time.sleep(0.03)  # ~30 FPS
+                # Reduced delay for higher FPS
+                time.sleep(0.01)  # ~100 FPS when frame_skip=2
                 
         except KeyboardInterrupt:
             print("\nInterrupted by user")
@@ -448,8 +474,13 @@ def main():
     # Create camera feed
     camera = CameraFeed()
     
-    # Create slow walker detector
-    detector = SlowWalkerDetection(camera)
+    # Create slow walker detector with optimized settings
+    detector = SlowWalkerDetection(
+        camera,
+        frame_skip=2,  # Process every 2nd frame for speed
+        history_size=5,  # Reduced history for faster response
+        slow_duration_threshold=0.8  # Slightly reduced for faster detection
+    )
     
     # Run detection
     detector.run_detection_loop()

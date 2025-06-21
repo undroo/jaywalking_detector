@@ -15,10 +15,10 @@ class MovementDetection:
     """
     
     def __init__(self, camera_feed: CameraFeed,
-                 history_length: int = 50,
+                 history_length: int = 20,
                  var_threshold: float = 16.0,
                  detect_shadows: bool = True,
-                 min_contour_area: int = 500,
+                 min_contour_area: int = 600,
                  movement_threshold: float = 0.01,
                  smoothing_frames: int = 5):
         """

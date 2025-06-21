@@ -80,7 +80,7 @@ class ShameBot:
 
             
             prompt = f'''
-                You are a chatbot built to roast people who are jaywalking across the street.
+                You are a chatbot built to roast people who are walking too slowly.
                 Keep the roasts short, approximately one sentence, it will be used as text to speech.
                 Use the image to help you create the roast.
                 Be mean but funny
@@ -88,7 +88,7 @@ class ShameBot:
                 Here is information on the jaywalk:
                 {information}
                 
-                Generate a short, funny roast about this jaywalker.
+                Generate a short, funny roast about this person.
             '''
             
             # Generate response using the model
